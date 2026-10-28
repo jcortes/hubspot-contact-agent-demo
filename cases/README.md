@@ -11,7 +11,7 @@ The file is a JSON array. Each entry is one submission:
 | `email` | yes | Sender's email. It identifies the HubSpot contact, so running the same file twice does not create duplicates. |
 | `company` | no | Sender's company, if the form asked for it. |
 | `message` | yes | What the sender wrote. The agent treats it as untrusted text. |
-| `submittedAt` | yes | Date received, as `YYYY-MM-DD`. A lead's follow-up task is due the next day. |
+| `submittedAt` | yes | Date received, as `YYYY-MM-DD`. The agent reads it as context. A lead's follow-up task is due the day after the agent runs, so old submissions do not produce overdue tasks. |
 
 ```json
 [

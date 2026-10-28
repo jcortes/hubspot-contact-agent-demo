@@ -175,7 +175,7 @@ export async function executeTool({
     await createTask({
       contactId: state.contactId,
       subject,
-      dueDate: nextDay(submission.submittedAt),
+      dueDate: nextDay(new Date().toISOString().slice(0, 10)),
     });
     state.wrote.push("task");
     return { content: "Task created." };

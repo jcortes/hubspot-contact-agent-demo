@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { main } from "../src/main.ts";
 import { type DraftForApproval, runAgent } from "../src/run.ts";
 import { terminalApprove } from "../src/terminal.ts";
@@ -85,6 +85,8 @@ const hubspotReply = ({ url, init }: Call) => {
 };
 
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-28T12:00:00Z"));
   modelCalls = [];
   hubspotCalls = [];
   modelScript = [];
@@ -116,6 +118,10 @@ beforeEach(() => {
       throw new Error(`Unexpected request to ${url.host}`);
     }),
   );
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 const requests = () => hubspotCalls.map((c) => `${c.init.method} ${c.url.pathname}`);
@@ -199,7 +205,8 @@ describe("a new lead", () => {
 
     const task = sentBody(hubspotCalls[3]!);
     expect(task.properties.hs_task_subject).toBe("Call Marta about the redesign");
-    expect(task.properties.hs_timestamp).toBe("2026-10-27T09:00:00.000Z");
+    // Due the day after the agent runs, whatever date the form was submitted.
+    expect(task.properties.hs_timestamp).toBe("2026-10-29T09:00:00.000Z");
     expect(task.associations[0].types[0].associationTypeId).toBe(204);
 
     expect(approvals).toHaveLength(1);
