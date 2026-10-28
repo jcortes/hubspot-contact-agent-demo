@@ -26,4 +26,4 @@ The file is a JSON array. Each entry is one submission:
 ]
 ```
 
-The sample file has ten cases: four leads, three support requests from existing contacts, two spam messages and one prompt-injection attempt. Support cases use the same contacts as the MCP demo; if those are not in your HubSpot account the agent simply creates them.
+The sample file has ten cases: four leads, three support requests from existing contacts, two spam messages and one prompt-injection attempt (in testing, the model classified it as spam). Support cases use the same contacts as the MCP demo; if those are not in your HubSpot account the agent simply creates them.
