@@ -21,6 +21,7 @@ export interface CaseState {
   contactId?: string;
   draft?: Draft;
   wrote: string[];
+  error?: string;
 }
 
 const Classify = z.object({
@@ -113,9 +114,22 @@ export async function executeTool({
   const args = parsed.data as never;
 
   if (name === "classify") {
+    if (state.category) {
+      return { content: "Already classified.", isError: true };
+    }
     const { category } = Classify.parse(args);
     state.category = category;
     return { content: `Recorded category: ${category}` };
+  }
+
+  if (!state.category) {
+    return { content: "Call classify first.", isError: true };
+  }
+  if (state.category === "spam") {
+    return {
+      content: "Spam is never written to HubSpot. Stop here.",
+      isError: true,
+    };
   }
 
   if (name === "save_contact") {
@@ -154,6 +168,9 @@ export async function executeTool({
   }
 
   if (name === "create_task") {
+    if (state.category !== "lead") {
+      return { content: "Follow-up tasks are only for leads.", isError: true };
+    }
     const { subject } = CreateTask.parse(args);
     await createTask({
       contactId: state.contactId,

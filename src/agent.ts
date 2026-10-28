@@ -34,6 +34,26 @@ export async function triage({
   submission: Submission;
 }): Promise<CaseState> {
   const state: CaseState = { wrote: [] };
+  try {
+    await converse({ client, submission, state });
+    if (!state.category) {
+      throw new Error("The model did not classify the submission.");
+    }
+  } catch (error) {
+    state.error = error instanceof Error ? error.message : String(error);
+  }
+  return state;
+}
+
+async function converse({
+  client,
+  submission,
+  state,
+}: {
+  client: OpenAI;
+  submission: Submission;
+  state: CaseState;
+}): Promise<void> {
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     { role: "system", content: SYSTEM_PROMPT },
     { role: "user", content: toPrompt(submission) },
@@ -58,7 +78,7 @@ export async function triage({
     const calls = (choice.message.tool_calls ?? []).filter(
       (call) => call.type === "function",
     );
-    if (calls.length === 0) return state;
+    if (calls.length === 0) return;
 
     messages.push({
       role: "assistant",

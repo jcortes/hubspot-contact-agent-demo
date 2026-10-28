@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { type DraftForApproval, runAgent } from "../src/run.ts";
@@ -8,12 +11,28 @@ process.env.HUBSPOT_TOKEN = "hubspot-test-token";
 const fixture = (name: string) =>
   fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url));
 
+const casesFile = (cases: object[]) => {
+  const path = join(mkdtempSync(join(tmpdir(), "cases-")), "cases.json");
+  writeFileSync(path, JSON.stringify(cases));
+  return path;
+};
+
+const submission = (overrides: object = {}) => ({
+  id: "case-1",
+  name: "Marta Quiroga",
+  email: "marta@harborcoffee.example.com",
+  company: "Harbor Coffee",
+  message: "Hi! Could you redesign our website before spring?",
+  submittedAt: "2026-10-26",
+  ...overrides,
+});
+
 type Call = { url: URL; init: RequestInit };
 
 let modelCalls: Call[] = [];
 let hubspotCalls: Call[] = [];
 let modelScript: unknown[] = [];
-let hubspot: (call: Call) => unknown = () => ({});
+let contacts = new Map<string, string>();
 
 const toolUse = (id: string, name: string, input: unknown) => ({
   id,
@@ -42,14 +61,26 @@ const modelReply = (toolCalls: unknown[], text?: string) => ({
 
 const sentBody = (call: Call) => JSON.parse(call.init.body as string);
 
+const hubspotReply = ({ url, init }: Call) => {
+  const body = init.body ? JSON.parse(init.body as string) : undefined;
+  if (url.pathname.endsWith("/contacts/search")) {
+    const email = body.filterGroups[0].filters[0].value;
+    const id = contacts.get(email);
+    return { results: id ? [{ id, properties: {} }] : [] };
+  }
+  if (url.pathname === "/crm/v3/objects/contacts" && init.method === "POST") {
+    const id = `contact-${contacts.size + 1}`;
+    contacts.set(body.properties.email, id);
+    return { id };
+  }
+  return { id: "new-id" };
+};
+
 beforeEach(() => {
   modelCalls = [];
   hubspotCalls = [];
   modelScript = [];
-  hubspot = ({ url }) => {
-    if (url.pathname.endsWith("/contacts/search")) return { results: [] };
-    return { id: "new-id" };
-  };
+  contacts = new Map();
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
@@ -63,12 +94,14 @@ beforeEach(() => {
       }
       if (url.host === "api.hubapi.com") {
         hubspotCalls.push(call);
-        return Response.json(hubspot(call));
+        return Response.json(hubspotReply(call));
       }
       throw new Error(`Unexpected request to ${url.host}`);
     }),
   );
 });
+
+const requests = () => hubspotCalls.map((c) => `${c.init.method} ${c.url.pathname}`);
 
 const leadScript = () => [
   modelReply([toolUse("t1", "classify", { category: "lead", reason: "Asks for a redesign." })]),
@@ -93,6 +126,24 @@ const leadScript = () => [
   modelReply([], "Done."),
 ];
 
+const supportScript = () => [
+  modelReply([toolUse("t1", "classify", { category: "support", reason: "Existing client with a question." })]),
+  modelReply([
+    toolUse("t2", "save_contact", {
+      email: "marta@harborcoffee.example.com",
+      firstName: "Marta",
+    }),
+  ]),
+  modelReply([toolUse("t3", "add_note", { summary: "Cannot log in to the CMS." })]),
+  modelReply([
+    toolUse("t4", "propose_draft", {
+      subject: "About your login",
+      body: "Hi Marta, sorry about that. The team will follow up today.",
+    }),
+  ]),
+  modelReply([], "Done."),
+];
+
 describe("a new lead", () => {
   it("is created in HubSpot with a note, a follow-up task and an approved reply", async () => {
     modelScript = leadScript();
@@ -106,9 +157,7 @@ describe("a new lead", () => {
       },
     });
 
-    const writes = hubspotCalls.filter((c) => c.init.method !== undefined);
-    const paths = writes.map((c) => `${c.init.method} ${c.url.pathname}`);
-    expect(paths).toEqual([
+    expect(requests()).toEqual([
       "POST /crm/v3/objects/contacts/search",
       "POST /crm/v3/objects/contacts",
       "POST /crm/v3/objects/notes",
@@ -116,7 +165,7 @@ describe("a new lead", () => {
       "POST /crm/v3/objects/notes",
     ]);
 
-    const contact = sentBody(writes[1]!);
+    const contact = sentBody(hubspotCalls[1]!);
     expect(contact.properties).toMatchObject({
       email: "marta@harborcoffee.example.com",
       firstname: "Marta",
@@ -125,13 +174,13 @@ describe("a new lead", () => {
       lifecyclestage: "lead",
     });
 
-    const note = sentBody(writes[2]!);
+    const note = sentBody(hubspotCalls[2]!);
     expect(note.properties.hs_note_body).toContain("Wants a website redesign");
     expect(note.properties.hs_note_body).toContain("redesign it before spring");
-    expect(note.associations[0].to.id).toBe("new-id");
+    expect(note.associations[0].to.id).toBe("contact-1");
     expect(note.associations[0].types[0].associationTypeId).toBe(202);
 
-    const task = sentBody(writes[3]!);
+    const task = sentBody(hubspotCalls[3]!);
     expect(task.properties.hs_task_subject).toBe("Call Marta about the redesign");
     expect(task.properties.hs_timestamp).toBe("2026-10-27T09:00:00.000Z");
     expect(task.associations[0].types[0].associationTypeId).toBe(204);
@@ -144,7 +193,7 @@ describe("a new lead", () => {
       subject: "Your website redesign",
     });
 
-    const approvedNote = sentBody(writes[4]!);
+    const approvedNote = sentBody(hubspotCalls[4]!);
     expect(approvedNote.properties.hs_note_body).toContain("Approved reply (not sent)");
     expect(approvedNote.properties.hs_note_body).toContain("Could we set up a short call?");
 
@@ -184,5 +233,137 @@ describe("a new lead", () => {
       "Bearer hubspot-test-token",
     );
   });
+
+  it("leaves no reply note when the human rejects the draft", async () => {
+    modelScript = leadScript();
+
+    const results = await runAgent({
+      casesPath: fixture("lead.json"),
+      approve: async () => false,
+    });
+
+    expect(requests()).toEqual([
+      "POST /crm/v3/objects/contacts/search",
+      "POST /crm/v3/objects/contacts",
+      "POST /crm/v3/objects/notes",
+      "POST /crm/v3/objects/tasks",
+    ]);
+    expect(results[0]).toMatchObject({ draft: "rejected" });
+    expect(results[0]!.wrote).not.toContain("approved reply note");
+  });
 });
 
+describe("a support request", () => {
+  it("updates an existing contact instead of creating another one", async () => {
+    contacts.set("marta@harborcoffee.example.com", "contact-77");
+    modelScript = supportScript();
+
+    const results = await runAgent({
+      casesPath: casesFile([submission({ message: "I cannot log in to the CMS." })]),
+      approve: async () => true,
+    });
+
+    expect(requests()).toEqual([
+      "POST /crm/v3/objects/contacts/search",
+      "PATCH /crm/v3/objects/contacts/contact-77",
+      "POST /crm/v3/objects/notes",
+      "POST /crm/v3/objects/notes",
+    ]);
+    expect(sentBody(hubspotCalls[1]!).properties).toEqual({ firstname: "Marta" });
+    expect(sentBody(hubspotCalls[2]!).associations[0].to.id).toBe("contact-77");
+    expect(results).toEqual([
+      {
+        id: "case-1",
+        category: "support",
+        wrote: ["contact updated", "note", "approved reply note"],
+        draft: "approved",
+      },
+    ]);
+  });
+
+  it("creates the contact, without marking it as a lead, when the email is unknown", async () => {
+    modelScript = supportScript();
+
+    const results = await runAgent({
+      casesPath: casesFile([submission()]),
+      approve: async () => true,
+    });
+
+    expect(requests()).toContain("POST /crm/v3/objects/contacts");
+    const created = sentBody(
+      hubspotCalls.find(
+        (c) => c.url.pathname === "/crm/v3/objects/contacts" && c.init.method === "POST",
+      )!,
+    );
+    expect(created.properties.lifecyclestage).toBeUndefined();
+    expect(requests()).not.toContain("POST /crm/v3/objects/tasks");
+    expect(results[0]!.wrote).toEqual(["contact created", "note", "approved reply note"]);
+  });
+});
+
+describe("spam", () => {
+  it("writes nothing to HubSpot and proposes no reply, even if the model tries", async () => {
+    modelScript = [
+      modelReply([toolUse("t1", "classify", { category: "spam", reason: "Crypto offer." })]),
+      modelReply([
+        toolUse("t2", "save_contact", { email: "promo@cheap-seo.example.com" }),
+      ]),
+      modelReply([], "Spam, nothing done."),
+    ];
+    const approve = vi.fn(async () => true);
+
+    const results = await runAgent({
+      casesPath: casesFile([
+        submission({ email: "promo@cheap-seo.example.com", message: "Buy 10k followers now!!!" }),
+      ]),
+      approve,
+    });
+
+    expect(hubspotCalls).toHaveLength(0);
+    expect(approve).not.toHaveBeenCalled();
+    expect(results).toEqual([
+      { id: "case-1", category: "spam", wrote: [], draft: "none" },
+    ]);
+    const secondRequest = sentBody(modelCalls[2]!);
+    const toolMessage = secondRequest.messages.at(-1);
+    expect(toolMessage.role).toBe("tool");
+    expect(toolMessage.content).toContain("Spam is never written to HubSpot");
+  });
+});
+
+describe("classification", () => {
+  it("marks the case as failed when the model answers outside the three categories", async () => {
+    modelScript = [
+      modelReply([toolUse("t1", "classify", { category: "urgent", reason: "Sounds urgent." })]),
+      modelReply([], "I could not decide."),
+    ];
+    const approve = vi.fn(async () => true);
+
+    const results = await runAgent({ casesPath: casesFile([submission()]), approve });
+
+    expect(hubspotCalls).toHaveLength(0);
+    expect(approve).not.toHaveBeenCalled();
+    expect(results[0]).toMatchObject({
+      id: "case-1",
+      wrote: [],
+      draft: "none",
+      error: "The model did not classify the submission.",
+    });
+    expect(results[0]!.category).toBeUndefined();
+  });
+});
+
+describe("running the same batch twice", () => {
+  it("does not create duplicate contacts", async () => {
+    modelScript = [...leadScript(), ...leadScript()];
+
+    const first = await runAgent({ casesPath: fixture("lead.json"), approve: async () => true });
+    const second = await runAgent({ casesPath: fixture("lead.json"), approve: async () => true });
+
+    const creations = requests().filter((r) => r === "POST /crm/v3/objects/contacts");
+    expect(creations).toHaveLength(1);
+    expect(first[0]!.wrote[0]).toBe("contact created");
+    expect(second[0]!.wrote[0]).toBe("contact updated");
+    expect(contacts.size).toBe(1);
+  });
+});

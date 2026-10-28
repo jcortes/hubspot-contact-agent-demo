@@ -38,8 +38,11 @@ async function processCase({
     category: state.category,
     wrote: state.wrote,
     draft: "none",
+    ...(state.error ? { error: state.error } : {}),
   };
-  if (!state.draft || !state.contactId || !state.category) return result;
+  if (state.error || !state.draft || !state.contactId || !state.category) {
+    return result;
+  }
 
   const approved = await approve({
     ...state.draft,
