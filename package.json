@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "scripts": {
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "start": "node --disable-warning=ExperimentalWarning --env-file=.env.local src/cli.ts"
   },
   "license": "MIT",
   "packageManager": "pnpm@10.28.2",

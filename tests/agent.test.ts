@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { main } from "../src/main.ts";
 import { type DraftForApproval, runAgent } from "../src/run.ts";
+import { terminalApprove } from "../src/terminal.ts";
+import { PassThrough } from "node:stream";
 
 process.env.OPENROUTER_API_KEY = "openrouter-test-key";
 process.env.HUBSPOT_TOKEN = "hubspot-test-token";
@@ -551,5 +554,66 @@ describe("when OpenRouter fails", () => {
 
     expect(results[0]!.error).toBe("The model returned no answer.");
     expect(hubspotCalls).toHaveLength(0);
+  });
+});
+
+describe("a whole batch from the entry point", () => {
+  it("prints one summary row per case with what was written and the reply status", async () => {
+    modelScript = [
+      ...leadScript(),
+      modelReply([toolUse("s1", "classify", { category: "spam", reason: "Backlinks offer." })]),
+      modelReply([], "Spam."),
+      modelError(401),
+    ];
+    const lines: string[] = [];
+
+    await main({
+      casesPath: casesFile([
+        submission({ id: "case-1" }),
+        submission({ id: "case-2", email: "offers@seo.example.com" }),
+        submission({ id: "case-3", email: "third@example.com" }),
+      ]),
+      approve: async () => true,
+      print: (line) => lines.push(line),
+    });
+
+    expect(lines).toEqual([
+      "",
+      "Summary",
+      "case-1  lead     HubSpot: contact created, note, task, approved reply note  |  reply: approved",
+      "case-2  spam     HubSpot: nothing written  |  reply: n/a",
+      "case-3  -        HubSpot: nothing written  |  reply: failed  |  ERROR: OpenRouter rejected the API key (status 401). Check OPENROUTER_API_KEY; retrying will not help.",
+      "Totals: submissions: 3 · leads: 1 · support: 0 · spam: 1 · failed: 1 · replies: 1 approved, 0 rejected",
+    ]);
+  });
+
+  it("uses the person's answer at the terminal to decide whether the reply is saved", async () => {
+    modelScript = [...leadScript(), ...leadScript()];
+    const answers = ["y", "n"];
+    const input = new PassThrough();
+    const output = new PassThrough();
+    output.on("data", (chunk) => {
+      if (chunk.toString().includes("(y/n)")) input.write(`${answers.shift()}\n`);
+    });
+    const terminal = terminalApprove({ input, output });
+    const lines: string[] = [];
+
+    await main({
+      casesPath: casesFile([
+        submission({ id: "case-1" }),
+        submission({ id: "case-2", email: "second@example.com" }),
+      ]),
+      approve: terminal.approve,
+      print: (line) => lines.push(line),
+    });
+    terminal.close();
+
+    expect(lines.at(-1)).toContain("replies: 1 approved, 1 rejected");
+    const replyNotes = hubspotCalls.filter(
+      (c) =>
+        c.url.pathname.endsWith("/notes") &&
+        sentBody(c).properties.hs_note_body.startsWith("Approved reply"),
+    );
+    expect(replyNotes).toHaveLength(1);
   });
 });
