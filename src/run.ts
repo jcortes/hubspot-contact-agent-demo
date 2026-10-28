@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { triage } from "./agent.ts";
 import { loadCases, type Submission } from "./cases.ts";
+import { describeError } from "./errors.ts";
 import { createNote } from "./hubspot.ts";
 import type { Category, Draft } from "./tools.ts";
 
@@ -53,10 +54,14 @@ async function processCase({
   });
   if (!approved) return { ...result, draft: "rejected" };
 
-  await createNote({
-    contactId: state.contactId,
-    body: `Approved reply (not sent)\nSubject: ${state.draft.subject}\n\n${state.draft.body}`,
-  });
+  try {
+    await createNote({
+      contactId: state.contactId,
+      body: `Approved reply (not sent)\nSubject: ${state.draft.subject}\n\n${state.draft.body}`,
+    });
+  } catch (error) {
+    return { ...result, draft: "approved", error: describeError(error) };
+  }
   return { ...result, wrote: [...result.wrote, "approved reply note"], draft: "approved" };
 }
 
