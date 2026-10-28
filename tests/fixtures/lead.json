@@ -1,0 +1,10 @@
+[
+  {
+    "id": "case-1",
+    "name": "Marta Quiroga",
+    "email": "marta@harborcoffee.example.com",
+    "company": "Harbor Coffee",
+    "message": "Hi! We run three coffee shops and our website is very dated. Could you redesign it before spring?",
+    "submittedAt": "2026-10-26"
+  }
+]
